@@ -19,6 +19,8 @@ jobs:
       before_install:
         - HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
         - HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg
+      before_script:
+        - export NODE_OPTIONS=–-max_old_space_size=8192
       script: 
         - cd gulp
         - yarn gulp build.standalone-prod || travis_terminate 1
@@ -37,6 +39,8 @@ jobs:
         # prevent Wine popup dialogs about installing additional packages
         - export WINEDLLOVERRIDES="mscoree,mshtml="
         - export WINEDEBUG="-all"
+      before_script:
+        - export NODE_OPTIONS=–-max_old_space_size=8192
       script:
         - cd gulp
         - yarn gulp build.standalone-prod || travis_terminate 1
@@ -52,6 +56,8 @@ jobs:
       before_install:
         - HOMEBREW_NO_AUTO_UPDATE=1 brew install git-lfs
         - HOMEBREW_NO_AUTO_UPDATE=1 brew install ffmpeg
+      before_script:
+        - export NODE_OPTIONS=–-max_old_space_size=8192
       script: 
         - cd gulp
         - yarn gulp build.standalone-prod || travis_terminate 1
@@ -75,6 +81,8 @@ jobs:
             - libavdevice-dev
             - ffmpeg
             - wine
+      before_script:
+        - export NODE_OPTIONS=–-max_old_space_size=8192
       script: 
         - cd gulp
         - yarn gulp build.standalone-prod || travis_terminate 1
@@ -93,6 +101,8 @@ jobs:
             - libavfilter-dev
             - libavdevice-dev
             - ffmpeg
+      before_script:
+        - export NODE_OPTIONS=–-max_old_space_size=8192
       script: 
         - cd gulp
         - yarn gulp build.standalone-prod || travis_terminate 1
@@ -116,7 +126,7 @@ jobs:
         - wget https://github.com/moiamond/docker-ffmpeg-base-windowsservercore/raw/master/System32/avicap32.dll -P /C/Windows/System32/
         - wget https://github.com/moiamond/docker-ffmpeg-base-windowsservercore/raw/master/System32/msvfw32.dll -P /C/Windows/System32/
       before_script:
-        - export NODE_OPTIONS=–max_old_space_size=8192
+        - export NODE_OPTIONS=–-max_old_space_size=8192
       script:
         - cd gulp
         - yarn gulp build.standalone-prod || travis_terminate 1
@@ -137,7 +147,7 @@ jobs:
         - wget https://github.com/moiamond/docker-ffmpeg-base-windowsservercore/raw/master/System32/avicap32.dll -P /C/Windows/System32/
         - wget https://github.com/moiamond/docker-ffmpeg-base-windowsservercore/raw/master/System32/msvfw32.dll -P /C/Windows/System32/
       before_script:
-        - export NODE_OPTIONS=–max_old_space_size=8192
+        - export NODE_OPTIONS=–-max_old_space_size=8192
       script:
         - cd gulp
         - yarn gulp build.standalone-prod || travis_terminate 1
