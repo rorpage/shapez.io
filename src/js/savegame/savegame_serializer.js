@@ -3,7 +3,6 @@ import { Component } from "../game/component";
 import { GameRoot } from "../game/root";
 /* typehints:end */
 
-import { JSON_stringify } from "../core/builtins";
 import { ExplainedResult } from "../core/explained_result";
 import { createLogger } from "../core/logging";
 // import { BuildingComponent } from "../components/impl/building";
@@ -27,10 +26,6 @@ export class SavegameSerializer {
      * @returns {object}
      */
     generateDumpFromGameRoot(root, sanityChecks = true) {
-        // Finalize particles before saving (Like granting destroy indicator rewards)
-        // root.particleMgr.finalizeBeforeSave();
-        // root.uiParticleMgr.finalizeBeforeSave();
-
         // Now store generic savegame payload
         const data = {
             camera: root.camera.serialize(),
@@ -88,7 +83,7 @@ export class SavegameSerializer {
                     // Verify components
                     if (!entity.components) {
                         return ExplainedResult.bad(
-                            "Entity is missing key 'components': " + JSON_stringify(entity)
+                            "Entity is missing key 'components': " + JSON.stringify(entity)
                         );
                     }
                     const components = entity.components;

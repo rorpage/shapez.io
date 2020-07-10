@@ -1,4 +1,3 @@
-import { Math_min, Math_max } from "../core/builtins";
 import { globalConfig } from "../core/config";
 import { DrawParameters } from "../core/draw_parameters";
 import { createLogger } from "../core/logging";
@@ -6,7 +5,7 @@ import { epsilonCompare, round4Digits } from "../core/utils";
 import { Vector } from "../core/vector";
 import { BaseItem } from "./base_item";
 import { Entity } from "./entity";
-import { GameRoot } from "./root";
+import { GameRoot, enumLayer } from "./root";
 import { Rectangle } from "../core/rectangle";
 import { BasicSerializableObject, types } from "../savegame/serialization";
 import { gItemRegistry } from "../core/global_registries";
@@ -59,34 +58,6 @@ export class BeltPath extends BasicSerializableObject {
     }
 
     /**
-     * Initializes the path by computing the properties which are not saved
-     * @param {boolean} computeSpacing Whether to also compute the spacing
-     */
-    init(computeSpacing = true) {
-        // Find acceptor and ejector
-        this.ejectorComp = this.entityPath[this.entityPath.length - 1].components.ItemEjector;
-        this.ejectorSlot = this.ejectorComp.slots[0];
-        this.initialBeltComponent = this.entityPath[0].components.Belt;
-
-        this.totalLength = this.computeTotalLength();
-
-        if (computeSpacing) {
-            this.spacingToFirstItem = this.totalLength;
-        }
-
-        /**
-         * Current bounds of this path
-         * @type {Rectangle}
-         */
-        this.worldBounds = this.computeBounds();
-
-        // Connect the belts
-        for (let i = 0; i < this.entityPath.length; ++i) {
-            this.entityPath[i].components.Belt.assignedPath = this;
-        }
-    }
-
-    /**
      * @param {GameRoot} root
      * @param {Array<Entity>} entityPath
      */
@@ -110,7 +81,33 @@ export class BeltPath extends BasicSerializableObject {
 
         this.init();
 
-        this.debug_checkIntegrity("constructor");
+        if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+            this.debug_checkIntegrity("constructor");
+        }
+    }
+    /**
+     * Initializes the path by computing the properties which are not saved
+     * @param {boolean} computeSpacing Whether to also compute the spacing
+     */
+    init(computeSpacing = true) {
+        this.onPathChanged();
+
+        this.totalLength = this.computeTotalLength();
+
+        if (computeSpacing) {
+            this.spacingToFirstItem = this.totalLength;
+        }
+
+        /**
+         * Current bounds of this path
+         * @type {Rectangle}
+         */
+        this.worldBounds = this.computeBounds();
+
+        // Connect the belts
+        for (let i = 0; i < this.entityPath.length; ++i) {
+            this.entityPath[i].components.Belt.assignedPath = this;
+        }
     }
 
     /**
@@ -118,7 +115,22 @@ export class BeltPath extends BasicSerializableObject {
      * @returns {boolean}
      */
     canAcceptItem() {
-        return this.spacingToFirstItem >= globalConfig.itemSpacingOnBelts;
+        return this.spacingToFirstItem >= this.getItemSpacing();
+    }
+
+    /**
+     * Returns the spacing between items
+     */
+    getItemSpacing() {
+        return globalConfig.beltItemSpacingByLayer[this.layer];
+    }
+
+    /**
+     * Returns the layer of the this path
+     * @returns {enumLayer}
+     */
+    getLayer() {
+        return this.entityPath[0].layer;
     }
 
     /**
@@ -126,9 +138,24 @@ export class BeltPath extends BasicSerializableObject {
      * @param {BaseItem} item
      */
     tryAcceptItem(item) {
-        if (this.spacingToFirstItem >= globalConfig.itemSpacingOnBelts) {
-            this.items.unshift([this.spacingToFirstItem, item]);
-            this.spacingToFirstItem = 0;
+        if (this.spacingToFirstItem >= this.getItemSpacing()) {
+            // So, since we already need one tick to accept this item we will add this directly.
+            const beltProgressPerTick =
+                this.root.hubGoals.getBeltBaseSpeed(this.layer) *
+                this.root.dynamicTickrate.deltaSeconds *
+                this.getItemSpacing();
+
+            // First, compute how much progress we can make *at max*
+            const maxProgress = Math.max(0, this.spacingToFirstItem - this.getItemSpacing());
+            const initialProgress = Math.min(maxProgress, beltProgressPerTick);
+
+            this.items.unshift([this.spacingToFirstItem - initialProgress, item]);
+            this.spacingToFirstItem = initialProgress;
+
+            if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+                this.debug_checkIntegrity("accept-item");
+            }
+
             return true;
         }
         return false;
@@ -159,6 +186,33 @@ export class BeltPath extends BasicSerializableObject {
     }
 
     /**
+     * Updates all ejectors on the path, so that only the last ejector
+     */
+    onPathChanged() {
+        this.ejectorComp = this.entityPath[this.entityPath.length - 1].components.ItemEjector;
+        this.ejectorSlot = this.ejectorComp.slots[0];
+
+        for (let i = 0; i < this.entityPath.length; ++i) {
+            const ejectorComp = this.entityPath[i].components.ItemEjector;
+            const isLast = i === this.entityPath.length - 1;
+            ejectorComp.enabled = isLast;
+
+            // Clear all slots of non-end entities
+            if (!isLast) {
+                for (let k = 0; k < ejectorComp.slots.length; ++k) {
+                    ejectorComp.slots[k].item = null;
+                    ejectorComp.slots[k].progress = 0.0;
+                }
+            }
+        }
+
+        this.layer = this.entityPath[0].layer;
+    }
+
+    // Following code will be compiled out outside of dev versions
+    /* dev:start */
+
+    /**
      * Helper to throw an error on mismatch
      * @param {string} change
      * @param {Array<any>} reason
@@ -171,10 +225,6 @@ export class BeltPath extends BasicSerializableObject {
      * Checks if this path is valid
      */
     debug_checkIntegrity(currentChange = "change") {
-        if (!G_IS_DEV) {
-            return;
-        }
-
         const fail = (...args) => this.debug_failIntegrity(currentChange, ...args);
 
         // Check for empty path
@@ -199,6 +249,11 @@ export class BeltPath extends BasicSerializableObject {
             const entity = this.entityPath[i];
             if (entity.destroyed) {
                 return fail("Reference to destroyed entity " + entity.uid);
+            }
+
+            const enabledState = i === this.entityPath.length - 1;
+            if (entity.components.ItemEjector.enabled !== enabledState) {
+                return fail("Item ejector enabled state is not synchronized (index =" + i + ")");
             }
 
             const followUp = this.root.systemMgr.systems.belt.findFollowUpEntity(entity);
@@ -240,9 +295,6 @@ export class BeltPath extends BasicSerializableObject {
         }
         if (!this.ejectorSlot) {
             return fail("Ejector slot not set");
-        }
-        if (this.initialBeltComponent !== this.entityPath[0].components.Belt) {
-            return fail("Stale initial belt component handle");
         }
 
         // Check spacing
@@ -307,6 +359,8 @@ export class BeltPath extends BasicSerializableObject {
         }
     }
 
+    /* dev:end */
+
     /**
      * Extends the belt path by the given belt
      * @param {Entity} entity
@@ -326,9 +380,10 @@ export class BeltPath extends BasicSerializableObject {
 
         // Append the entity
         this.entityPath.push(entity);
+        this.onPathChanged();
 
         // Extend the path length
-        const additionalLength = beltComp.getEffectiveLengthTiles();
+        const additionalLength = beltComp.getEffectiveLengthTiles(entity.layer);
         this.totalLength += additionalLength;
         DEBUG && logger.log("  Extended total length by", additionalLength, "to", this.totalLength);
 
@@ -349,17 +404,15 @@ export class BeltPath extends BasicSerializableObject {
             lastItem[_nextDistance] += additionalLength;
         }
 
-        // Update handles
-        this.ejectorComp = entity.components.ItemEjector;
-        this.ejectorSlot = this.ejectorComp.slots[0];
-
         // Assign reference
         beltComp.assignedPath = this;
 
         // Update bounds
         this.worldBounds = this.computeBounds();
 
-        this.debug_checkIntegrity("extend-on-end");
+        if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+            this.debug_checkIntegrity("extend-on-end");
+        }
     }
 
     /**
@@ -373,7 +426,7 @@ export class BeltPath extends BasicSerializableObject {
 
         // All items on that belt are simply lost (for now)
 
-        const length = beltComp.getEffectiveLengthTiles();
+        const length = beltComp.getEffectiveLengthTiles(entity.layer);
 
         // Extend the length of this path
         this.totalLength += length;
@@ -384,12 +437,14 @@ export class BeltPath extends BasicSerializableObject {
         // Set handles and append entity
         beltComp.assignedPath = this;
         this.entityPath.unshift(entity);
-        this.initialBeltComponent = this.entityPath[0].components.Belt;
+        this.onPathChanged();
 
         // Update bounds
         this.worldBounds = this.computeBounds();
 
-        this.debug_checkIntegrity("extend-on-begin");
+        if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+            this.debug_checkIntegrity("extend-on-begin");
+        }
     }
 
     /**
@@ -423,7 +478,7 @@ export class BeltPath extends BasicSerializableObject {
         const beltComp = entity.components.Belt;
         beltComp.assignedPath = null;
 
-        const entityLength = beltComp.getEffectiveLengthTiles();
+        const entityLength = beltComp.getEffectiveLengthTiles(entity.layer);
         assert(this.entityPath.indexOf(entity) >= 0, "Entity not contained for split");
         assert(this.entityPath.indexOf(entity) !== 0, "Entity is first");
         assert(this.entityPath.indexOf(entity) !== this.entityPath.length - 1, "Entity is last");
@@ -441,7 +496,7 @@ export class BeltPath extends BasicSerializableObject {
 
             ++firstPathEntityCount;
             firstPathEndEntity = otherEntity;
-            firstPathLength += otherEntity.components.Belt.getEffectiveLengthTiles();
+            firstPathLength += otherEntity.components.Belt.getEffectiveLengthTiles(otherEntity.layer);
         }
 
         DEBUG &&
@@ -522,7 +577,7 @@ export class BeltPath extends BasicSerializableObject {
             } else {
                 // Seems this item is on the first path (so all good), so just make sure it doesn't
                 // have a nextDistance which is bigger than the total path length
-                const clampedDistanceToNext = Math_min(itemPos + distanceToNext, firstPathLength) - itemPos;
+                const clampedDistanceToNext = Math.min(itemPos + distanceToNext, firstPathLength) - itemPos;
                 if (clampedDistanceToNext < distanceToNext) {
                     DEBUG &&
                         logger.log(
@@ -559,15 +614,16 @@ export class BeltPath extends BasicSerializableObject {
             this.spacingToFirstItem = this.totalLength;
         }
 
-        // Set new ejector and acceptor handles
-        this.ejectorComp = firstPathEndEntity.components.ItemEjector;
-        this.ejectorSlot = this.ejectorComp.slots[0];
+        this.onPathChanged();
+        secondPath.onPathChanged();
 
         // Update bounds
         this.worldBounds = this.computeBounds();
 
-        this.debug_checkIntegrity("split-two-first");
-        secondPath.debug_checkIntegrity("split-two-second");
+        if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+            this.debug_checkIntegrity("split-two-first");
+            secondPath.debug_checkIntegrity("split-two-second");
+        }
 
         return secondPath;
     }
@@ -584,7 +640,7 @@ export class BeltPath extends BasicSerializableObject {
 
         // Ok, first remove the entity
         const beltComp = entity.components.Belt;
-        const beltLength = beltComp.getEffectiveLengthTiles();
+        const beltLength = beltComp.getEffectiveLengthTiles(entity.layer);
 
         DEBUG &&
             logger.log(
@@ -598,6 +654,7 @@ export class BeltPath extends BasicSerializableObject {
             );
         this.totalLength -= beltLength;
         this.entityPath.pop();
+        this.onPathChanged();
 
         DEBUG &&
             logger.log(
@@ -671,14 +728,12 @@ export class BeltPath extends BasicSerializableObject {
             }
         }
 
-        // Update handles
-        this.ejectorComp = this.entityPath[this.entityPath.length - 1].components.ItemEjector;
-        this.ejectorSlot = this.ejectorComp.slots[0];
-
         // Update bounds
         this.worldBounds = this.computeBounds();
 
-        this.debug_checkIntegrity("delete-on-end");
+        if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+            this.debug_checkIntegrity("delete-on-end");
+        }
     }
 
     /**
@@ -694,7 +749,7 @@ export class BeltPath extends BasicSerializableObject {
 
         // Ok, first remove the entity
         const beltComp = entity.components.Belt;
-        const beltLength = beltComp.getEffectiveLengthTiles();
+        const beltLength = beltComp.getEffectiveLengthTiles(entity.layer);
 
         DEBUG &&
             logger.log(
@@ -708,6 +763,7 @@ export class BeltPath extends BasicSerializableObject {
             );
         this.totalLength -= beltLength;
         this.entityPath.shift();
+        this.onPathChanged();
 
         DEBUG &&
             logger.log(
@@ -801,13 +857,12 @@ export class BeltPath extends BasicSerializableObject {
             }
         }
 
-        // Update handles
-        this.initialBeltComponent = this.entityPath[0].components.Belt;
-
         // Update bounds
         this.worldBounds = this.computeBounds();
 
-        this.debug_checkIntegrity("delete-on-start");
+        if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+            this.debug_checkIntegrity("delete-on-start");
+        }
     }
 
     /**
@@ -834,7 +889,7 @@ export class BeltPath extends BasicSerializableObject {
             beltComp.assignedPath = this;
 
             // Update our length
-            const additionalLength = beltComp.getEffectiveLengthTiles();
+            const additionalLength = beltComp.getEffectiveLengthTiles(entity.layer);
             this.totalLength += additionalLength;
         }
 
@@ -845,10 +900,6 @@ export class BeltPath extends BasicSerializableObject {
                 "entities and has a length of",
                 this.totalLength
             );
-
-        // Update handles
-        this.ejectorComp = this.entityPath[this.entityPath.length - 1].components.ItemEjector;
-        this.ejectorSlot = this.ejectorComp.slots[0];
 
         // Now, update the distance of our last item
         if (this.items.length !== 0) {
@@ -881,7 +932,11 @@ export class BeltPath extends BasicSerializableObject {
         // Update bounds
         this.worldBounds = this.computeBounds();
 
-        this.debug_checkIntegrity("extend-by-path");
+        this.onPathChanged();
+
+        if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+            this.debug_checkIntegrity("extend-by-path");
+        }
     }
 
     /**
@@ -891,7 +946,8 @@ export class BeltPath extends BasicSerializableObject {
     computeTotalLength() {
         let length = 0;
         for (let i = 0; i < this.entityPath.length; ++i) {
-            length += this.entityPath[i].components.Belt.getEffectiveLengthTiles();
+            const entity = this.entityPath[i];
+            length += entity.components.Belt.getEffectiveLengthTiles(this.layer);
         }
         return length;
     }
@@ -900,19 +956,21 @@ export class BeltPath extends BasicSerializableObject {
      * Performs one tick
      */
     update() {
-        this.debug_checkIntegrity("pre-update");
+        if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+            this.debug_checkIntegrity("pre-update");
+        }
 
         // Divide by item spacing on belts since we use throughput and not speed
         let beltSpeed =
-            this.root.hubGoals.getBeltBaseSpeed() *
+            this.root.hubGoals.getBeltBaseSpeed(this.layer) *
             this.root.dynamicTickrate.deltaSeconds *
-            globalConfig.itemSpacingOnBelts;
+            this.getItemSpacing();
 
         if (G_IS_DEV && globalConfig.debug.instantBelts) {
             beltSpeed *= 100;
         }
 
-        let minimumDistance = this.ejectorSlot.item ? globalConfig.itemSpacingOnBelts : 0;
+        let minimumDistance = this.ejectorSlot.item ? this.getItemSpacing() : 0;
 
         // Try to reduce spacing
         let remainingAmount = beltSpeed;
@@ -920,9 +978,9 @@ export class BeltPath extends BasicSerializableObject {
             const nextDistanceAndItem = this.items[i];
             const minimumSpacing = minimumDistance;
 
-            const takeAway = Math_max(
+            const takeAway = Math.max(
                 0,
-                Math_min(remainingAmount, nextDistanceAndItem[_nextDistance] - minimumSpacing)
+                Math.min(remainingAmount, nextDistanceAndItem[_nextDistance] - minimumSpacing)
             );
 
             remainingAmount -= takeAway;
@@ -933,7 +991,7 @@ export class BeltPath extends BasicSerializableObject {
                 break;
             }
 
-            minimumDistance = globalConfig.itemSpacingOnBelts;
+            minimumDistance = this.getItemSpacing();
         }
 
         const lastItem = this.items[this.items.length - 1];
@@ -944,7 +1002,9 @@ export class BeltPath extends BasicSerializableObject {
             }
         }
 
-        this.debug_checkIntegrity("post-update");
+        if (G_IS_DEV && globalConfig.debug.checkBeltPaths) {
+            this.debug_checkIntegrity("post-update");
+        }
     }
 
     /**
@@ -960,14 +1020,14 @@ export class BeltPath extends BasicSerializableObject {
 
         for (let i = 0; i < this.entityPath.length; ++i) {
             const beltComp = this.entityPath[i].components.Belt;
-            const localLength = beltComp.getEffectiveLengthTiles();
+            const localLength = beltComp.getEffectiveLengthTiles(this.layer);
 
             if (currentLength + localLength >= progress || i === this.entityPath.length - 1) {
                 // Min required here due to floating point issues
-                const localProgress = Math_min(1.0, progress - currentLength);
+                const localProgress = Math.min(1.0, progress - currentLength);
 
                 assert(localProgress >= 0.0, "Invalid local progress: " + localProgress);
-                const localSpace = beltComp.transformBeltToLocalSpace(localProgress);
+                const localSpace = beltComp.transformBeltToLocalSpace(localProgress, this.layer);
                 return this.entityPath[i].components.StaticMapEntity.localTileToWorld(localSpace);
             }
             currentLength += localLength;
@@ -982,6 +1042,11 @@ export class BeltPath extends BasicSerializableObject {
      */
     drawDebug(parameters) {
         if (!parameters.visibleRect.containsRect(this.worldBounds)) {
+            return;
+        }
+
+        if (this.entityPath[0].layer !== this.root.currentLayer) {
+            // Don't draw
             return;
         }
 
@@ -1018,7 +1083,6 @@ export class BeltPath extends BasicSerializableObject {
                 worldPos.y + 2
             );
             progress += nextDistanceAndItem[_nextDistance];
-            nextDistanceAndItem[_item].draw(worldPos.x, worldPos.y, parameters, 10);
         }
 
         for (let i = 0; i < this.entityPath.length; ++i) {
@@ -1053,14 +1117,50 @@ export class BeltPath extends BasicSerializableObject {
             return;
         }
 
-        let progress = this.spacingToFirstItem;
-        for (let i = 0; i < this.items.length; ++i) {
-            const nextDistanceAndItem = this.items[i];
-            const worldPos = this.computePositionFromProgress(progress).toWorldSpaceCenterOfTile();
-            if (parameters.visibleRect.containsCircle(worldPos.x, worldPos.y, 10)) {
-                nextDistanceAndItem[_item].draw(worldPos.x, worldPos.y, parameters);
+        if (this.items.length === 0) {
+            // Early out
+            return;
+        }
+
+        let currentItemPos = this.spacingToFirstItem;
+        let currentItemIndex = 0;
+
+        let trackPos = 0.0;
+
+        // Iterate whole track and check items
+        for (let i = 0; i < this.entityPath.length; ++i) {
+            const entity = this.entityPath[i];
+            const beltComp = entity.components.Belt;
+            const beltLength = beltComp.getEffectiveLengthTiles(this.layer);
+
+            // Check if the current items are on the belt
+            while (trackPos + beltLength >= currentItemPos) {
+                // Its on the belt, render it now
+                const staticComp = entity.components.StaticMapEntity;
+                assert(
+                    currentItemPos - trackPos >= 0,
+                    "invalid track pos: " + currentItemPos + " vs " + trackPos + " (l  =" + beltLength + ")"
+                );
+
+                const localPos = beltComp.transformBeltToLocalSpace(currentItemPos - trackPos, this.layer);
+                const worldPos = staticComp.localTileToWorld(localPos).toWorldSpaceCenterOfTile();
+
+                const distanceAndItem = this.items[currentItemIndex];
+                if (parameters.visibleRect.containsCircle(worldPos.x, worldPos.y, 10)) {
+                    distanceAndItem[_item].draw(worldPos.x, worldPos.y, parameters);
+                }
+
+                // Check for the next item
+                currentItemPos += distanceAndItem[_nextDistance];
+                ++currentItemIndex;
+
+                if (currentItemIndex >= this.items.length) {
+                    // We rendered all items
+                    return;
+                }
             }
-            progress += nextDistanceAndItem[_nextDistance];
+
+            trackPos += beltLength;
         }
     }
 }

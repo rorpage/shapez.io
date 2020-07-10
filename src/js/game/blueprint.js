@@ -3,9 +3,8 @@ import { Loader } from "../core/loader";
 import { createLogger } from "../core/logging";
 import { Vector } from "../core/vector";
 import { Entity } from "./entity";
-import { GameRoot } from "./root";
+import { GameRoot, enumLayer } from "./root";
 import { findNiceIntegerValue } from "../core/utils";
-import { Math_pow } from "../core/builtins";
 import { blueprintShape } from "./upgrades";
 import { globalConfig } from "../core/config";
 
@@ -17,6 +16,17 @@ export class Blueprint {
      */
     constructor(entities) {
         this.entities = entities;
+    }
+
+    /**
+     * Returns the layer of this blueprint
+     * @returns {enumLayer}
+     */
+    get layer() {
+        if (this.entities.length === 0) {
+            return enumLayer.regular;
+        }
+        return this.entities[0].layer;
     }
 
     /**
@@ -42,7 +52,8 @@ export class Blueprint {
         }
 
         averagePosition.divideScalarInplace(uids.length);
-        const blueprintOrigin = averagePosition.floor();
+        const blueprintOrigin = averagePosition.subScalars(0.5, 0.5).floor();
+
         for (let i = 0; i < uids.length; ++i) {
             newEntities[i].components.StaticMapEntity.origin.subInplace(blueprintOrigin);
         }
@@ -58,7 +69,7 @@ export class Blueprint {
         if (G_IS_DEV && globalConfig.debug.blueprintsNoCost) {
             return 0;
         }
-        return findNiceIntegerValue(4 * Math_pow(this.entities.length, 1.1));
+        return findNiceIntegerValue(4 * Math.pow(this.entities.length, 1.1));
     }
 
     /**
@@ -79,17 +90,7 @@ export class Blueprint {
             const rect = staticComp.getTileSpaceBounds();
             rect.moveBy(tile.x, tile.y);
 
-            let placeable = true;
-            placementCheck: for (let x = rect.x; x < rect.right(); ++x) {
-                for (let y = rect.y; y < rect.bottom(); ++y) {
-                    if (parameters.root.map.isTileUsedXY(x, y)) {
-                        placeable = false;
-                        break placementCheck;
-                    }
-                }
-            }
-
-            if (!placeable) {
+            if (!parameters.root.logic.checkCanPlaceEntity(entity, tile)) {
                 parameters.context.globalAlpha = 0.3;
             } else {
                 parameters.context.globalAlpha = 1;
@@ -139,21 +140,8 @@ export class Blueprint {
         let anyPlaceable = false;
 
         for (let i = 0; i < this.entities.length; ++i) {
-            let placeable = true;
             const entity = this.entities[i];
-            const staticComp = entity.components.StaticMapEntity;
-            const rect = staticComp.getTileSpaceBounds();
-            rect.moveBy(tile.x, tile.y);
-            placementCheck: for (let x = rect.x; x < rect.right(); ++x) {
-                for (let y = rect.y; y < rect.bottom(); ++y) {
-                    if (root.map.isTileUsedXY(x, y)) {
-                        placeable = false;
-                        break placementCheck;
-                    }
-                }
-            }
-
-            if (placeable) {
+            if (root.logic.checkCanPlaceEntity(entity, tile)) {
                 anyPlaceable = true;
             }
         }
@@ -177,48 +165,17 @@ export class Blueprint {
         return root.logic.performBulkOperation(() => {
             let anyPlaced = false;
             for (let i = 0; i < this.entities.length; ++i) {
-                let placeable = true;
                 const entity = this.entities[i];
-                const staticComp = entity.components.StaticMapEntity;
-                const rect = staticComp.getTileSpaceBounds();
-                rect.moveBy(tile.x, tile.y);
-                placementCheck: for (let x = rect.x; x < rect.right(); ++x) {
-                    for (let y = rect.y; y < rect.bottom(); ++y) {
-                        const contents = root.map.getTileContentXY(x, y);
-                        if (contents && !contents.components.ReplaceableMapEntity) {
-                            placeable = false;
-                            break placementCheck;
-                        }
-                    }
+                if (!root.logic.checkCanPlaceEntity(entity, tile)) {
+                    continue;
                 }
 
-                if (placeable) {
-                    for (let x = rect.x; x < rect.right(); ++x) {
-                        for (let y = rect.y; y < rect.bottom(); ++y) {
-                            const contents = root.map.getTileContentXY(x, y);
-                            if (contents) {
-                                assert(
-                                    contents.components.ReplaceableMapEntity,
-                                    "Can not delete entity for blueprint"
-                                );
-                                if (!root.logic.tryDeleteBuilding(contents)) {
-                                    assertAlways(
-                                        false,
-                                        "Building has replaceable component but is also unremovable in blueprint"
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    const clone = entity.duplicateWithoutContents();
-                    clone.components.StaticMapEntity.origin.addInplace(tile);
-
-                    root.map.placeStaticEntity(clone);
-
-                    root.entityMgr.registerEntity(clone);
-                    anyPlaced = true;
-                }
+                const clone = entity.duplicateWithoutContents();
+                clone.components.StaticMapEntity.origin.addInplace(tile);
+                root.logic.freeEntityAreaBeforeBuild(clone);
+                root.map.placeStaticEntity(clone);
+                root.entityMgr.registerEntity(clone);
+                anyPlaced = true;
             }
             return anyPlaced;
         });
